@@ -1,0 +1,25 @@
+{
+  "name": "pm-unleashed",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/atlassian-mcp-shared apps/goals-projects-mcp apps/jira-rest-mcp",
+    "clean": "find . -name dist -type d -prune -exec rm -rf {} + && find . -name '*.tsbuildinfo' -delete",
+    "typecheck": "tsc -b --pretty false",
+    "bootstrap": "npm run build && node scripts/discover-tenant-model.mjs && node scripts/discover-jira-schema.mjs",
+    "anythingllm:config": "mkdir -p deploy/anythingllm/generated && node scripts/render-anythingllm-config.mjs",
+    "anythingllm:config:docker": "mkdir -p deploy/anythingllm/generated && node scripts/render-anythingllm-config.mjs --target docker",
+    "anythingllm:write-config": "node scripts/render-anythingllm-config.mjs --out deploy/anythingllm/generated/anythingllm_mcp_servers.json",
+    "anythingllm:write-config:docker": "node scripts/render-anythingllm-config.mjs --target docker --out deploy/anythingllm/generated/anythingllm_mcp_servers.docker.json",
+    "claude:config": "node scripts/render-claude-code-config.mjs --out deploy/claude-code/generated/.mcp.json",
+    "claude:write-config": "node scripts/render-claude-code-config.mjs --out .mcp.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^6.0.3"
+  }
+}

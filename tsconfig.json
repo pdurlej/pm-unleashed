@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/atlassian-mcp-shared"
+    },
+    {
+      "path": "./apps/goals-projects-mcp"
+    },
+    {
+      "path": "./apps/jira-rest-mcp"
+    }
+  ]
+}

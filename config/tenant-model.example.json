@@ -1,0 +1,94 @@
+{
+  "tenant": {
+    "siteUrl": "https://your-domain.atlassian.net",
+    "containerId": "ari:cloud:townsquare::site/your-cloud-id",
+    "discoveredAt": "2026-01-01T00:00:00.000Z"
+  },
+  "logicalGoalTypes": {
+    "ORG": {
+      "goalTypeId": "ari:cloud:goal:your-cloud-id:goal-type/example/org",
+      "strategy": "discovered-or-configured",
+      "sourceLabel": "Organization Goal"
+    },
+    "BUSINESS": {
+      "goalTypeId": "ari:cloud:goal:your-cloud-id:goal-type/example/business",
+      "strategy": "discovered-or-configured",
+      "sourceLabel": "Business Goal"
+    },
+    "ADOPTION": {
+      "goalTypeId": "ari:cloud:goal:your-cloud-id:goal-type/example/adoption",
+      "strategy": "discovered-or-configured",
+      "sourceLabel": "Adoption Goal"
+    },
+    "SUCCESS_MEASURE": {
+      "goalTypeId": "ari:cloud:goal:your-cloud-id:goal-type/example/success-measure",
+      "strategy": "native-success-measure",
+      "sourceLabel": "Success measure"
+    }
+  },
+  "goalTypeMap": {},
+  "secondaryContribution": {
+    "strategy": "description_metadata",
+    "marker": "secondaryContributionRefs",
+    "tagConvention": "org:<slug>"
+  },
+  "pilot": {
+    "namePrefix": "MCPTEST::",
+    "tags": [
+      "mcp-pilot",
+      "do-not-report"
+    ]
+  },
+  "jira": {
+    "discoveredAt": "2026-01-01T00:00:00.000Z",
+    "globalFields": {
+      "goalsField": {
+        "id": "customfield_10000",
+        "name": "Goals",
+        "clauseName": "Goals"
+      },
+      "atlassianProjectField": {
+        "id": "customfield_10001",
+        "name": "Atlassian project",
+        "clauseName": "cf[10001]"
+      },
+      "atlassianProjectStatusField": {
+        "id": "customfield_10002",
+        "name": "Atlassian project status",
+        "clauseName": "cf[10002]"
+      },
+      "primaryJpdIdeaKeyField": {
+        "id": "customfield_10003",
+        "name": "Primary JPD Idea Key",
+        "clauseName": "cf[10003]"
+      }
+    },
+    "jpdProjects": [
+      {
+        "id": "10000",
+        "key": "DISC",
+        "name": "Product Discovery",
+        "ideaIssueTypeId": "10001",
+        "horizonField": {
+          "id": "customfield_10004",
+          "name": "Roadmap",
+          "clauseName": "Roadmap",
+          "options": [
+            {
+              "id": "1",
+              "value": "Now"
+            },
+            {
+              "id": "2",
+              "value": "Next"
+            },
+            {
+              "id": "3",
+              "value": "Later"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

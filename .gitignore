@@ -1,0 +1,14 @@
+node_modules
+dist
+outputs/
+tmp/
+*.tsbuildinfo
+*.backup-*
+.DS_Store
+.cache
+.env
+.env.local
+config/tenant-model.local.json
+deploy/anythingllm/generated/
+deploy/claude-code/generated/
+.mcp.json

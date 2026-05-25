@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "goals-projects-mcp": {
+      "command": "node",
+      "args": [
+        "/app/server/storage/mcp/pm-unleashed/apps/goals-projects-mcp/dist/index.js"
+      ],
+      "env": {
+        "ATLASSIAN_EMAIL": "",
+        "ATLASSIAN_API_TOKEN": "",
+        "ATLASSIAN_CLOUD_ID": "your-cloud-id",
+        "ATLASSIAN_SITE_URL": "https://your-domain.atlassian.net"
+      },
+      "anythingllm": {
+        "autoStart": true
+      }
+    },
+    "jira-portfolio-mcp": {
+      "command": "node",
+      "args": [
+        "/app/server/storage/mcp/pm-unleashed/apps/jira-rest-mcp/dist/index.js"
+      ],
+      "env": {
+        "JIRA_URL": "https://your-domain.atlassian.net",
+        "JIRA_USERNAME": "",
+        "JIRA_API_TOKEN": ""
+      },
+      "anythingllm": {
+        "autoStart": true
+      }
+    }
+  }
+}

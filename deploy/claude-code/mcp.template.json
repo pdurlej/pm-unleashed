@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "goals-projects-local": {
+      "type": "stdio",
+      "command": "__NODE_BIN__",
+      "args": [
+        "__REPO_DIR__/scripts/claude-goals-projects-mcp.mjs"
+      ],
+      "env": {}
+    },
+    "jira-portfolio-local": {
+      "type": "stdio",
+      "command": "__NODE_BIN__",
+      "args": [
+        "__REPO_DIR__/scripts/claude-jira-portfolio-mcp.mjs"
+      ],
+      "env": {}
+    }
+  }
+}
+
