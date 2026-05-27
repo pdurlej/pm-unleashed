@@ -101,13 +101,17 @@ server.tool(
 
 server.tool(
   "search_jpd_items",
-  "Search generic Jira Product Discovery work items across configured JPD issue types.",
+  "Search generic Jira Product Discovery work items across configured JPD issue types, optionally filtered by Atlassian Project batch.",
   {
     projectKeys: z.array(z.string()).optional(),
     issueTypeNames: z.array(z.string()).optional(),
     issueTypeIds: z.array(z.string()).optional(),
     statuses: z.array(z.string()).optional(),
     searchText: z.string().optional(),
+    atlassianProjectId: z.string().optional(),
+    atlassianProjectIds: z.array(z.string()).optional(),
+    batchAtlassianProjectId: z.string().optional(),
+    batchAtlassianProjectIds: z.array(z.string()).optional(),
     maxResults: z.number().int().min(1).max(50).optional(),
     nextPageToken: z.string().optional(),
   },

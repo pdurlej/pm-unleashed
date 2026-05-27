@@ -32,10 +32,21 @@ It adds richer discovery and portfolio planning layers around that model.
 ### JPD Premium
 
 - `list_jpd_issue_types` lists all issue types in JPD spaces.
-- `search_jpd_items` searches across JPD issue types, not only `Idea`.
+- `search_jpd_items` searches across JPD issue types, not only `Idea`; use `atlassianProjectId`, `atlassianProjectIds`, or their `batch*` aliases when a roadmap is grouped as batches by `Atlassian project`.
 - `get_jpd_item` reads one JPD work item with known portfolio fields.
 - `discover_jpd_connections` lists connection-like JPD fields visible through schema discovery.
 - `set_jpd_connection` validates issue `editmeta` before writing a connection field.
+
+Example batch lookup for a JPD roadmap:
+
+```json
+{
+  "projectKeys": ["PROD"],
+  "issueTypeNames": ["Idea"],
+  "atlassianProjectId": "ari:cloud:townsquare:<cloud-id>:project/<project-id>",
+  "maxResults": 50
+}
+```
 
 ### Jira Plans
 
@@ -71,4 +82,3 @@ Use `apply` only when the target is pilot-scoped, allowlisted, or explicitly app
 - JPD connections are treated as schema-discovered capabilities because their field shape can vary by tenant.
 - Jira Plans access is probed explicitly. `403` and `401` are returned as diagnostic results.
 - Existing V1 tools remain backward-compatible and keep treating JPD Ideas as standard Jira issues.
-

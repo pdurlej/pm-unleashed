@@ -90,7 +90,7 @@ Premium capability tools are additive. The original V1 flow still works as:
 Organization Goal -> Business Goal -> Atlassian Project -> JPD Idea -> Jira Epic
 ```
 
-On Jira Product Discovery Premium and Jira Software Premium, the Jira Product Portfolio MCP can also discover JPD issue-type hierarchies, connection-like JPD fields, Jira Plans API access, and Advanced Roadmaps fields such as `Parent Link`, `Team`, `Target start`, and `Target end`.
+On Jira Product Discovery Premium and Jira Software Premium, the Jira Product Portfolio MCP can also discover JPD issue-type hierarchies, connection-like JPD fields, Jira Plans API access, Advanced Roadmaps fields such as `Parent Link`, `Team`, `Target start`, and `Target end`, and JPD roadmap batches grouped by `Atlassian project`.
 
 ## Safety Model
 

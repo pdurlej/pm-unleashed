@@ -1549,6 +1549,10 @@ export async function searchJpdItems(input: {
   issueTypeIds?: string[];
   statuses?: string[];
   searchText?: string;
+  atlassianProjectId?: string;
+  atlassianProjectIds?: string[];
+  batchAtlassianProjectId?: string;
+  batchAtlassianProjectIds?: string[];
   maxResults?: number;
   nextPageToken?: string;
 }) {
@@ -1587,6 +1591,26 @@ export async function searchJpdItems(input: {
   const jqlParts = [`(${projectClauses.join(" OR ")})`];
   if (input.searchText) {
     jqlParts.push(`summary ~ ${quoteJql(input.searchText)}`);
+  }
+  const batchAtlassianProjectIds = unique(
+    [
+      input.atlassianProjectId,
+      input.batchAtlassianProjectId,
+      ...(input.atlassianProjectIds ?? []),
+      ...(input.batchAtlassianProjectIds ?? []),
+    ].filter((value): value is string => Boolean(value)),
+  );
+  if (batchAtlassianProjectIds.length > 0) {
+    const atlassianProjectField = schema.globalFields.atlassianProjectField;
+    if (!atlassianProjectField) {
+      throw new Error("Jira schema is missing the Atlassian project field required for batch filtering.");
+    }
+    const fieldJql = `cf[${atlassianProjectField.id.replace("customfield_", "")}]`;
+    const valueJql =
+      batchAtlassianProjectIds.length === 1
+        ? `= ${quoteJql(batchAtlassianProjectIds[0] ?? "")}`
+        : `in (${batchAtlassianProjectIds.map(quoteJql).join(", ")})`;
+    jqlParts.push(`${fieldJql} ${valueJql}`);
   }
 
   const response = await createClient().post<SearchJqlResponse>("/rest/api/3/search/jql", {
