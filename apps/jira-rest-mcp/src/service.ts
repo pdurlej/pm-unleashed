@@ -78,6 +78,13 @@ interface SearchJqlResponse {
   isLast?: boolean;
 }
 
+interface IssueLinkType {
+  id?: string;
+  name: string;
+  inward?: string;
+  outward?: string;
+}
+
 interface JiraIssue {
   id: string;
   key: string;
@@ -90,19 +97,53 @@ interface DiscoveredFieldRef {
   clauseName?: string;
   schema?: JiraFieldSchema;
   options?: Array<{ id: string; value: string }>;
+  operations?: string[];
+  scope?: JiraField["scope"];
 }
 
 interface DiscoveredJpdProject {
   id: string;
   key: string;
   name: string;
-  ideaIssueTypeId: string;
+  issueTypes?: JiraIssueType[];
+  ideaIssueTypeId?: string;
   horizonField?: DiscoveredFieldRef;
   desiredOutcomeField?: DiscoveredFieldRef;
   hypothesisField?: DiscoveredFieldRef;
   businessOwnerField?: DiscoveredFieldRef;
   techOwnerField?: DiscoveredFieldRef;
   adoptionOwnerField?: DiscoveredFieldRef;
+  premiumFields?: {
+    polarisFields: DiscoveredFieldRef[];
+    connectionFields: DiscoveredFieldRef[];
+  };
+}
+
+interface PlansAccessStatus {
+  status: "available" | "forbidden" | "unauthorized" | "unavailable";
+  endpoint: string;
+  message?: string;
+  planCount?: number;
+  sample?: unknown[];
+}
+
+interface JiraPremiumCapabilities {
+  discoveredAt: string;
+  plansAccess: PlansAccessStatus;
+  jpdIssueTypes: Array<{
+    projectId: string;
+    projectKey: string;
+    projectName: string;
+    issueTypes: JiraIssueType[];
+  }>;
+  jpdPolarisFields: DiscoveredFieldRef[];
+  jpdConnectionFields: DiscoveredFieldRef[];
+  advancedRoadmapsFields: {
+    parentLinkField?: DiscoveredFieldRef;
+    teamField?: DiscoveredFieldRef;
+    targetStartField?: DiscoveredFieldRef;
+    targetEndField?: DiscoveredFieldRef;
+  };
 }
 
 interface JiraSchemaSnapshot {
@@ -114,8 +155,13 @@ interface JiraSchemaSnapshot {
     deliveryProgressField?: DiscoveredFieldRef;
     deliveryStatusField?: DiscoveredFieldRef;
     primaryJpdIdeaKeyField?: DiscoveredFieldRef;
+    parentLinkField?: DiscoveredFieldRef;
+    teamField?: DiscoveredFieldRef;
+    targetStartField?: DiscoveredFieldRef;
+    targetEndField?: DiscoveredFieldRef;
   };
   jpdProjects: DiscoveredJpdProject[];
+  premiumCapabilities?: JiraPremiumCapabilities;
 }
 
 interface MutationControl {
@@ -185,6 +231,44 @@ interface IdeaEpicLinkInput extends MutationControl {
   ideaKey: string;
   epicKey: string;
   primaryJpdIdeaKey?: string;
+}
+
+interface JpdConnectionInput extends MutationControl {
+  issueKey: string;
+  connectionFieldId?: string;
+  connectionFieldName?: string;
+  targetIssueKeys: string[];
+  replace?: boolean;
+}
+
+interface PlanCreateInput extends MutationControl {
+  name: string;
+  issueSources: Array<{ type: "Project" | "Board" | "Filter"; value: number | string }>;
+  scheduling?: Record<string, unknown>;
+  leadAccountId?: string;
+  permissions?: Array<Record<string, unknown>>;
+  customFields?: Array<Record<string, unknown>>;
+  exclusionRules?: Record<string, unknown>;
+  crossProjectReleases?: Array<Record<string, unknown>>;
+}
+
+interface PlanUpdateInput extends MutationControl {
+  planId: number | string;
+  patch: Array<Record<string, unknown>>;
+}
+
+interface PortfolioFieldInput extends MutationControl {
+  issueKey: string;
+  parentLinkKey?: string;
+  teamIdOrName?: string;
+  targetStart?: string;
+  targetEnd?: string;
+}
+
+interface DependencyLinkInput extends MutationControl {
+  blocksIssueKey: string;
+  blockedIssueKey: string;
+  linkType?: string;
 }
 
 interface AssetsWorkspaceResponse {
@@ -424,6 +508,8 @@ function fieldRefFromField(field?: JiraField | JiraMetaField): DiscoveredFieldRe
     name: field.name,
     clauseName: field.clauseNames?.[0],
     schema: field.schema,
+    operations: "operations" in field ? field.operations : undefined,
+    scope: field.scope,
     options:
       allowedValues
         ?.filter((value): value is { id: string; value: string } => Boolean(value.id && value.value))
@@ -545,6 +631,36 @@ function buildFieldValue(field: DiscoveredFieldRef | undefined, value: unknown):
     return value;
   }
 
+  if (schema.custom?.includes("connection")) {
+    const values = Array.isArray(value) ? value : [value];
+    return values
+      .filter((item) => item !== undefined && item !== null)
+      .map((item) => {
+        if (typeof item !== "string") {
+          return item;
+        }
+        return { key: item };
+      });
+  }
+
+  if (schema.custom === "com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team") {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const matched = field.options?.find(
+      (option) => normalizeFieldName(option.value) === normalizeFieldName(value) || option.id === value,
+    );
+    return { id: matched?.id ?? value };
+  }
+
+  if (schema.custom === "com.atlassian.jpo:jpo-custom-field-parent") {
+    return value;
+  }
+
+  if (schema.type === "date") {
+    return value;
+  }
+
   if (schema.type === "user") {
     return typeof value === "string" ? { accountId: value } : value;
   }
@@ -567,6 +683,100 @@ function buildFieldValue(field: DiscoveredFieldRef | undefined, value: unknown):
   return value;
 }
 
+function isPolarisField(field: JiraField | JiraMetaField): boolean {
+  return Boolean(field.schema?.custom?.startsWith("jira.polaris:"));
+}
+
+function isConnectionField(field: JiraField | JiraMetaField): boolean {
+  const normalizedName = normalizeFieldName(field.name);
+  const custom = field.schema?.custom ?? "";
+  return custom.includes("connection") || normalizedName.includes("connection");
+}
+
+function fieldBySchemaCustom(fields: JiraField[], custom: string): DiscoveredFieldRef | undefined {
+  return fieldRefFromField(pickField(fields, (field) => field.schema?.custom === custom));
+}
+
+async function probePlansAccess(client: JiraRestClient): Promise<PlansAccessStatus> {
+  const endpoint = "/rest/api/3/plans/plan";
+  try {
+    const response = await client.get<{
+      total?: number;
+      values?: unknown[];
+    }>(`${endpoint}?maxResults=5`);
+    return {
+      status: "available",
+      endpoint,
+      planCount: response.total ?? response.values?.length ?? 0,
+      sample: response.values ?? [],
+    };
+  } catch (error) {
+    if (error instanceof HttpError) {
+      if (error.status === 401) {
+        return {
+          status: "unauthorized",
+          endpoint,
+          message: "Jira Plans API returned 401 Unauthorized for the current token.",
+        };
+      }
+      if (error.status === 403) {
+        return {
+          status: "forbidden",
+          endpoint,
+          message: "Jira Plans API requires Administer Jira permission for this endpoint.",
+        };
+      }
+      return {
+        status: "unavailable",
+        endpoint,
+        message: `Jira Plans API returned HTTP ${error.status}.`,
+      };
+    }
+    return {
+      status: "unavailable",
+      endpoint,
+      message: error instanceof Error ? error.message : "Jira Plans API probe failed.",
+    };
+  }
+}
+
+function buildPremiumCapabilities(input: {
+  fields: JiraField[];
+  jpdProjects: DiscoveredJpdProject[];
+  plansAccess: PlansAccessStatus;
+}): JiraPremiumCapabilities {
+  const jpdPolarisFields = input.fields
+    .filter((field) => isPolarisField(field))
+    .map((field) => fieldRefFromField(field))
+    .filter((field): field is DiscoveredFieldRef => Boolean(field));
+  const jpdConnectionFields = input.fields
+    .filter((field) => isPolarisField(field) && isConnectionField(field))
+    .map((field) => fieldRefFromField(field))
+    .filter((field): field is DiscoveredFieldRef => Boolean(field));
+
+  return {
+    discoveredAt: new Date().toISOString(),
+    plansAccess: input.plansAccess,
+    jpdIssueTypes: input.jpdProjects.map((project) => ({
+      projectId: project.id,
+      projectKey: project.key,
+      projectName: project.name,
+      issueTypes: project.issueTypes ?? [],
+    })),
+    jpdPolarisFields,
+    jpdConnectionFields,
+    advancedRoadmapsFields: {
+      parentLinkField: fieldBySchemaCustom(input.fields, "com.atlassian.jpo:jpo-custom-field-parent"),
+      teamField: fieldBySchemaCustom(
+        input.fields,
+        "com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team",
+      ),
+      targetStartField: fieldBySchemaCustom(input.fields, "com.atlassian.jpo:jpo-custom-field-baseline-start"),
+      targetEndField: fieldBySchemaCustom(input.fields, "com.atlassian.jpo:jpo-custom-field-baseline-end"),
+    },
+  };
+}
+
 async function loadSchemaSnapshot(forceRefresh = false): Promise<JiraSchemaSnapshot> {
   const current = await readTenantModelConfig(configPath);
   const fromConfig = (current.jira ?? {}) as Partial<JiraSchemaSnapshot>;
@@ -575,6 +785,7 @@ async function loadSchemaSnapshot(forceRefresh = false): Promise<JiraSchemaSnaps
       discoveredAt: fromConfig.discoveredAt,
       globalFields: fromConfig.globalFields ?? {},
       jpdProjects: fromConfig.jpdProjects as DiscoveredJpdProject[],
+      premiumCapabilities: fromConfig.premiumCapabilities,
     };
   }
   return discoverJiraSchema();
@@ -592,15 +803,21 @@ export async function discoverJiraSchema(): Promise<JiraSchemaSnapshot> {
     const projectDetail = await client.get<JiraProject>(
       `/rest/api/3/project/${encodeURIComponent(project.key)}`,
     );
-    const ideaIssueType = projectDetail.issueTypes?.find((issueType: JiraIssueType) => issueType.name === "Idea");
-    if (!ideaIssueType) {
-      continue;
-    }
+    const issueTypes = projectDetail.issueTypes ?? [];
+    const ideaIssueType = issueTypes.find((issueType: JiraIssueType) => issueType.name === "Idea");
 
     const projectFields = fields.filter(
       (field: JiraField) => field.scope?.type === "PROJECT" && field.scope.project?.id === project.id,
     );
-    const editMeta = await loadIdeaEditMeta(client, project, ideaIssueType.id);
+    const editMeta = ideaIssueType ? await loadIdeaEditMeta(client, project, ideaIssueType.id) : {};
+    const polarisFields = projectFields
+      .filter((field) => isPolarisField(field))
+      .map((field) => fieldRefFromField(field))
+      .filter((field): field is DiscoveredFieldRef => Boolean(field));
+    const connectionFields = Object.values(editMeta)
+      .filter((field) => isConnectionField(field))
+      .map((field) => fieldRefFromField(field))
+      .filter((field): field is DiscoveredFieldRef => Boolean(field));
 
     const horizonAliases = ["roadmap", "horizon", "now/next/later", "now / next / later"];
     const horizonField =
@@ -639,16 +856,22 @@ export async function discoverJiraSchema(): Promise<JiraSchemaSnapshot> {
       id: project.id,
       key: project.key,
       name: project.name,
-      ideaIssueTypeId: ideaIssueType.id,
+      issueTypes,
+      ideaIssueTypeId: ideaIssueType?.id,
       horizonField,
       desiredOutcomeField,
       hypothesisField,
       businessOwnerField,
       techOwnerField,
       adoptionOwnerField,
+      premiumFields: {
+        polarisFields,
+        connectionFields,
+      },
     });
   }
 
+  const plansAccess = await probePlansAccess(client);
   const snapshot: JiraSchemaSnapshot = {
     discoveredAt: new Date().toISOString(),
     globalFields: {
@@ -670,9 +893,17 @@ export async function discoverJiraSchema(): Promise<JiraSchemaSnapshot> {
       primaryJpdIdeaKeyField: fieldRefFromField(
         pickField(fields, (field) => normalizeFieldName(field.name) === "primary jpd idea key"),
       ),
+      parentLinkField: fieldBySchemaCustom(fields, "com.atlassian.jpo:jpo-custom-field-parent"),
+      teamField: fieldBySchemaCustom(
+        fields,
+        "com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team",
+      ),
+      targetStartField: fieldBySchemaCustom(fields, "com.atlassian.jpo:jpo-custom-field-baseline-start"),
+      targetEndField: fieldBySchemaCustom(fields, "com.atlassian.jpo:jpo-custom-field-baseline-end"),
     },
     jpdProjects,
   };
+  snapshot.premiumCapabilities = buildPremiumCapabilities({ fields, jpdProjects, plansAccess });
 
   await updateTenantModelConfig(configPath, (current: Record<string, unknown>) => ({
     ...current,
@@ -680,6 +911,14 @@ export async function discoverJiraSchema(): Promise<JiraSchemaSnapshot> {
   }));
 
   return snapshot;
+}
+
+export async function discoverPremiumCapabilities(): Promise<JiraPremiumCapabilities> {
+  const snapshot = await discoverJiraSchema();
+  if (!snapshot.premiumCapabilities) {
+    throw new Error("Premium capability discovery did not produce a result.");
+  }
+  return snapshot.premiumCapabilities;
 }
 
 export async function healthCheck() {
@@ -1289,6 +1528,107 @@ export async function searchSpaces(input: { searchString?: string }) {
   return { items };
 }
 
+export async function listJpdIssueTypes(input: { projectKey?: string }) {
+  const schema = await loadSchemaSnapshot();
+  const projects = input.projectKey
+    ? schema.jpdProjects.filter((project) => project.key === input.projectKey)
+    : schema.jpdProjects;
+  return {
+    items: projects.map((project) => ({
+      projectId: project.id,
+      projectKey: project.key,
+      projectName: project.name,
+      issueTypes: project.issueTypes ?? [],
+    })),
+  };
+}
+
+export async function searchJpdItems(input: {
+  projectKeys?: string[];
+  issueTypeNames?: string[];
+  issueTypeIds?: string[];
+  statuses?: string[];
+  searchText?: string;
+  maxResults?: number;
+  nextPageToken?: string;
+}) {
+  const schema = await loadSchemaSnapshot();
+  const projects =
+    input.projectKeys && input.projectKeys.length > 0
+      ? schema.jpdProjects.filter((project) => input.projectKeys?.includes(project.key))
+      : schema.jpdProjects;
+
+  const projectClauses = projects.flatMap((project) => {
+    const issueTypes = project.issueTypes ?? [];
+    const filteredTypes = issueTypes.filter((issueType) => {
+      const nameMatch = !input.issueTypeNames?.length || input.issueTypeNames.includes(issueType.name);
+      const idMatch = !input.issueTypeIds?.length || input.issueTypeIds.includes(issueType.id);
+      return nameMatch && idMatch;
+    });
+    const selectedTypes =
+      input.issueTypeNames?.length || input.issueTypeIds?.length ? filteredTypes : issueTypes;
+    if (selectedTypes.length === 0) {
+      return [];
+    }
+    const parts = [
+      `project = ${quoteJql(project.key)}`,
+      `issuetype in (${selectedTypes.map((issueType) => quoteJql(issueType.name)).join(", ")})`,
+    ];
+    if (input.statuses?.length) {
+      parts.push(`status in (${input.statuses.map(quoteJql).join(", ")})`);
+    }
+    return [`(${parts.join(" AND ")})`];
+  });
+
+  if (projectClauses.length === 0) {
+    return { nextPageToken: null, items: [] };
+  }
+
+  const jqlParts = [`(${projectClauses.join(" OR ")})`];
+  if (input.searchText) {
+    jqlParts.push(`summary ~ ${quoteJql(input.searchText)}`);
+  }
+
+  const response = await createClient().post<SearchJqlResponse>("/rest/api/3/search/jql", {
+    jql: jqlParts.join(" AND "),
+    maxResults: input.maxResults ?? 20,
+    nextPageToken: input.nextPageToken,
+    fields: unique(projects.flatMap((project) => fieldIdsForProject(project, schema))),
+  });
+
+  return {
+    nextPageToken: response.nextPageToken ?? null,
+    items: response.issues.map((issue) => {
+      const projectKey = ((issue.fields.project as { key?: string } | undefined)?.key ?? "") as string;
+      return normalizeIssue(issue, schema, issueProjectMapping(schema, projectKey));
+    }),
+  };
+}
+
+export async function getJpdItem(input: { issueKey?: string; issueId?: string }) {
+  const issueKeyOrId = input.issueKey ?? input.issueId;
+  if (!issueKeyOrId) {
+    throw new Error("Expected issueKey or issueId.");
+  }
+  return fetchIssue(issueKeyOrId);
+}
+
+export async function discoverJpdConnections(input: { projectKey?: string }) {
+  const schema = await loadSchemaSnapshot(true);
+  const projects = input.projectKey
+    ? schema.jpdProjects.filter((project) => project.key === input.projectKey)
+    : schema.jpdProjects;
+  return {
+    globalConnectionFields: schema.premiumCapabilities?.jpdConnectionFields ?? [],
+    projects: projects.map((project) => ({
+      projectKey: project.key,
+      projectName: project.name,
+      connectionFields: project.premiumFields?.connectionFields ?? [],
+      polarisFields: project.premiumFields?.polarisFields ?? [],
+    })),
+  };
+}
+
 function quoteJql(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
@@ -1322,6 +1662,12 @@ function fieldIdsForProject(project?: DiscoveredJpdProject, schema?: JiraSchemaS
       project?.businessOwnerField?.id,
       project?.techOwnerField?.id,
       project?.adoptionOwnerField?.id,
+      ...(project?.premiumFields?.polarisFields ?? []).map((field) => field.id),
+      ...(project?.premiumFields?.connectionFields ?? []).map((field) => field.id),
+      schema?.globalFields.parentLinkField?.id,
+      schema?.globalFields.teamField?.id,
+      schema?.globalFields.targetStartField?.id,
+      schema?.globalFields.targetEndField?.id,
     ].filter((value): value is string => Boolean(value)),
   );
 }
@@ -1360,6 +1706,10 @@ function normalizeIssue(issue: JiraIssue, schema: JiraSchemaSnapshot, project: D
     primaryJpdIdeaKey: globalFields.primaryJpdIdeaKeyField
       ? fields[globalFields.primaryJpdIdeaKeyField.id] ?? null
       : null,
+    parentLink: globalFields.parentLinkField ? fields[globalFields.parentLinkField.id] ?? null : null,
+    team: globalFields.teamField ? fields[globalFields.teamField.id] ?? null : null,
+    targetStart: globalFields.targetStartField ? fields[globalFields.targetStartField.id] ?? null : null,
+    targetEnd: globalFields.targetEndField ? fields[globalFields.targetEndField.id] ?? null : null,
     issueLinks: fields.issuelinks ?? [],
     rawFields: fields,
   };
@@ -1488,6 +1838,13 @@ async function loadCreateMetaFields(projectKey: string, issueTypeId: string): Pr
   const project = await client.get<JiraProject>(`/rest/api/3/project/${encodeURIComponent(projectKey)}`);
   const response = await client.get<{ fields?: Record<string, JiraMetaField> | JiraMetaField[] }>(
     `/rest/api/3/issue/createmeta/${project.id}/issuetypes/${issueTypeId}`,
+  );
+  return normalizeMetaFields(response.fields);
+}
+
+async function loadIssueEditMeta(issueKey: string): Promise<Record<string, JiraMetaField>> {
+  const response = await createClient().get<{ fields: Record<string, JiraMetaField> }>(
+    `/rest/api/3/issue/${encodeURIComponent(issueKey)}/editmeta`,
   );
   return normalizeMetaFields(response.fields);
 }
@@ -1684,6 +2041,9 @@ export async function createIdea(input: IdeaMutationInput): Promise<AuditResult<
   const project = issueProjectMapping(schema, input.projectKey);
   if (!project) {
     throw new Error(`Unknown JPD space "${input.projectKey}". Run discover_jira_schema first.`);
+  }
+  if (!project.ideaIssueTypeId) {
+    throw new Error(`JPD space "${input.projectKey}" does not expose an Idea issue type.`);
   }
   assertIdeaCreateModel(schema, input);
 
@@ -1985,6 +2345,132 @@ export async function setIdeaLinks(input: IdeaLinkInput): Promise<AuditResult<un
   });
 }
 
+function findEditableFieldByIdOrName(
+  editMeta: Record<string, JiraMetaField>,
+  input: { fieldId?: string; fieldName?: string },
+): JiraMetaField | undefined {
+  const normalizedName = input.fieldName ? normalizeFieldName(input.fieldName) : undefined;
+  return Object.values(editMeta).find((field) => {
+    const ids = [field.id, field.key, field.fieldId].filter((value): value is string => Boolean(value));
+    return (
+      (input.fieldId ? ids.includes(input.fieldId) : false) ||
+      (normalizedName ? normalizeFieldName(field.name) === normalizedName : false)
+    );
+  });
+}
+
+function hasEditOperation(field: JiraMetaField, operation: "set" | "add"): boolean {
+  return field.operations?.includes(operation) ?? false;
+}
+
+function fieldValueContainsTargets(value: unknown, targetIssueKeys: string[]): boolean {
+  const serialized = JSON.stringify(value ?? "");
+  return targetIssueKeys.every((issueKey) => serialized.includes(issueKey));
+}
+
+export async function setJpdConnection(input: JpdConnectionInput): Promise<AuditResult<unknown>> {
+  const mode = input.mode ?? "preview";
+  const replace = input.replace ?? true;
+  if (!input.connectionFieldId && !input.connectionFieldName) {
+    throw new Error("Expected connectionFieldId or connectionFieldName.");
+  }
+  if (input.targetIssueKeys.length === 0) {
+    throw new Error("Expected at least one targetIssueKey.");
+  }
+
+  const current = await getJpdItem({ issueKey: input.issueKey });
+  const editMeta = await loadIssueEditMeta(current.key);
+  const metaField = findEditableFieldByIdOrName(editMeta, {
+    fieldId: input.connectionFieldId,
+    fieldName: input.connectionFieldName,
+  });
+  if (!metaField) {
+    const availableConnectionFields = Object.values(editMeta)
+      .filter((field) => isConnectionField(field))
+      .map((field) => ({ id: field.id, key: field.key, name: field.name, operations: field.operations }));
+    throw new Error(
+      `Connection field is not editable on ${current.key}. Available connection-like fields: ${JSON.stringify(availableConnectionFields)}.`,
+    );
+  }
+  if (replace && !hasEditOperation(metaField, "set")) {
+    throw new Error(`Field "${metaField.name}" does not support the set operation required by replace=true.`);
+  }
+  if (!replace && !hasEditOperation(metaField, "add")) {
+    throw new Error(`Field "${metaField.name}" does not support the add operation required by replace=false.`);
+  }
+
+  const fieldRef = fieldRefFromField(metaField);
+  const normalizedValue = buildFieldValue(fieldRef, input.targetIssueKeys);
+  const payload = replace
+    ? { fields: { [fieldRef?.id ?? metaField.id]: normalizedValue } }
+    : {
+        update: {
+          [fieldRef?.id ?? metaField.id]: (Array.isArray(normalizedValue) ? normalizedValue : [normalizedValue]).map(
+            (value) => ({ add: value }),
+          ),
+        },
+      };
+
+  const preview = buildAuditResult(
+    {
+      intent: "Set JPD connection field",
+      target: current.key,
+      warnings: [
+        "JPD connection field payloads are tenant-configured. Apply mode validates editmeta before write and read-back after write.",
+      ],
+      steps: [
+        {
+          kind: "rest",
+          description: replace ? "Replace the JPD connection field value." : "Add target issues to the JPD connection field.",
+          endpoint: `/rest/api/3/issue/${current.key}`,
+          input: payload,
+          before: current,
+        },
+      ],
+      rollbackHint: "Re-run set_jpd_connection with the previous connection targets, or revert from Jira issue history.",
+      result: {
+        before: current,
+        field: fieldRef,
+      },
+    },
+    mode,
+    false,
+  );
+
+  return runGuardedMutation({
+    actionKey: "jira.set_jpd_connection",
+    mode,
+    changeReason: input.changeReason,
+    idempotencyKey: input.idempotencyKey,
+    pilotScope: {
+      existingName: String(current.summary ?? ""),
+      refs: [current.key, projectKeyFromIssue(current)].filter((value): value is string => Boolean(value)),
+    },
+    fingerprintInput: { issueKey: current.key, field: fieldRef?.id ?? metaField.id, targetIssueKeys: input.targetIssueKeys, replace },
+    preview,
+    apply: async () => {
+      await createClient().put(`/rest/api/3/issue/${encodeURIComponent(current.key)}`, payload);
+      const after = await getJpdItem({ issueKey: current.key });
+      const readBack = fieldRef ? after.rawFields[fieldRef.id] : undefined;
+      if (!fieldValueContainsTargets(readBack, input.targetIssueKeys)) {
+        throw new Error(`Jira accepted the connection update, but read-back did not confirm all targets on ${current.key}.`);
+      }
+      return buildAuditResult(
+        {
+          intent: preview.intent,
+          target: current.key,
+          warnings: [],
+          steps: preview.steps,
+          rollbackHint: preview.rollbackHint,
+          result: after,
+        },
+        mode,
+        true,
+      );
+    },
+  });
+}
+
 export async function searchEpics(input: {
   projectKeys?: string[];
   statuses?: string[];
@@ -2049,6 +2535,171 @@ export async function getEpic(input: { issueKey?: string; issueId?: string }) {
     )}`,
   );
   return normalizeIssue(issue, schema, undefined);
+}
+
+export async function plansHealthCheck(): Promise<PlansAccessStatus> {
+  return probePlansAccess(createClient());
+}
+
+export async function listPlans(input: {
+  includeArchived?: boolean;
+  includeTrashed?: boolean;
+  maxResults?: number;
+  cursor?: string;
+}) {
+  const query = buildQuery({
+    includeArchived: input.includeArchived,
+    includeTrashed: input.includeTrashed,
+    maxResults: input.maxResults ?? 20,
+    cursor: input.cursor,
+  });
+  try {
+    const response = await createClient().get<unknown>(`/rest/api/3/plans/plan${query}`);
+    return {
+      status: "available",
+      response,
+    };
+  } catch (error) {
+    if (error instanceof HttpError && [401, 403].includes(error.status)) {
+      return {
+        status: error.status === 401 ? "unauthorized" : "forbidden",
+        message:
+          error.status === 403
+            ? "Jira Plans API requires Administer Jira permission for this endpoint."
+            : "Jira Plans API returned 401 Unauthorized for the current token.",
+      };
+    }
+    throw error;
+  }
+}
+
+export async function getPlan(input: { planId: string | number }) {
+  try {
+    return {
+      status: "available",
+      response: await createClient().get<unknown>(`/rest/api/3/plans/plan/${encodeURIComponent(String(input.planId))}`),
+    };
+  } catch (error) {
+    if (error instanceof HttpError && [401, 403].includes(error.status)) {
+      return {
+        status: error.status === 401 ? "unauthorized" : "forbidden",
+        message:
+          error.status === 403
+            ? "Jira Plans API requires Administer Jira permission for this endpoint."
+            : "Jira Plans API returned 401 Unauthorized for the current token.",
+      };
+    }
+    throw error;
+  }
+}
+
+export async function createPlan(input: PlanCreateInput): Promise<AuditResult<unknown>> {
+  const mode = input.mode ?? "preview";
+  const payload = {
+    name: input.name,
+    issueSources: input.issueSources,
+    scheduling: input.scheduling,
+    leadAccountId: input.leadAccountId,
+    permissions: input.permissions,
+    customFields: input.customFields,
+    exclusionRules: input.exclusionRules,
+    crossProjectReleases: input.crossProjectReleases,
+  };
+  const preview = buildAuditResult(
+    {
+      intent: "Create Jira Plan",
+      target: input.name,
+      warnings: ["Jira Plans create/update APIs require Administer Jira permission."],
+      steps: [
+        {
+          kind: "rest",
+          description: "Create a Jira Plan through the Jira Plans API.",
+          endpoint: "/rest/api/3/plans/plan",
+          input: payload,
+        },
+      ],
+      rollbackHint: "Archive or delete the created Jira Plan from Jira Plans if rollback is needed.",
+      result: { name: input.name },
+    },
+    mode,
+    false,
+  );
+
+  return runGuardedMutation({
+    actionKey: "jira.create_plan",
+    mode,
+    changeReason: input.changeReason,
+    idempotencyKey: input.idempotencyKey,
+    pilotScope: { name: input.name },
+    fingerprintInput: payload,
+    preview,
+    apply: async () => {
+      const result = await createClient().post<unknown>("/rest/api/3/plans/plan", payload);
+      return buildAuditResult(
+        {
+          intent: preview.intent,
+          target: input.name,
+          warnings: [],
+          steps: preview.steps,
+          rollbackHint: preview.rollbackHint,
+          result,
+        },
+        mode,
+        true,
+      );
+    },
+  });
+}
+
+export async function updatePlan(input: PlanUpdateInput): Promise<AuditResult<unknown>> {
+  const mode = input.mode ?? "preview";
+  const preview = buildAuditResult(
+    {
+      intent: "Update Jira Plan",
+      target: String(input.planId),
+      warnings: ["Jira Plans create/update APIs require Administer Jira permission."],
+      steps: [
+        {
+          kind: "rest",
+          description: "Patch a Jira Plan through the Jira Plans API.",
+          endpoint: `/rest/api/3/plans/plan/${input.planId}`,
+          input: input.patch,
+        },
+      ],
+      rollbackHint: "Use Jira Plan history/configuration to reverse the patch if needed.",
+      result: { planId: input.planId },
+    },
+    mode,
+    false,
+  );
+
+  return runGuardedMutation({
+    actionKey: "jira.update_plan",
+    mode,
+    changeReason: input.changeReason,
+    idempotencyKey: input.idempotencyKey,
+    pilotScope: { refs: [String(input.planId)] },
+    fingerprintInput: { planId: input.planId, patch: input.patch },
+    preview,
+    apply: async () => {
+      const result = await createClient().put<unknown>(
+        `/rest/api/3/plans/plan/${encodeURIComponent(String(input.planId))}`,
+        input.patch,
+      );
+      return buildAuditResult(
+        {
+          intent: preview.intent,
+          target: String(input.planId),
+          warnings: [],
+          steps: preview.steps,
+          rollbackHint: preview.rollbackHint,
+          result,
+        },
+        mode,
+        true,
+      );
+    },
+  });
 }
 
 export async function createEpic(input: EpicMutationInput): Promise<AuditResult<unknown>> {
@@ -2245,15 +2896,201 @@ export async function updateEpic(input: EpicUpdateInput): Promise<AuditResult<un
   });
 }
 
-async function resolveIssueLinkTypeName(): Promise<string> {
-  const response = await createClient().get<{ issueLinkTypes: Array<{ name: string }> }>(
-    "/rest/api/3/issueLinkType",
+function fieldJqlClause(field: DiscoveredFieldRef): string {
+  return field.id.startsWith("customfield_") ? `cf[${field.id.replace("customfield_", "")}]` : quoteJql(field.name);
+}
+
+function portfolioFieldIds(schema: JiraSchemaSnapshot): string[] {
+  return unique(
+    [
+      "summary",
+      "description",
+      "status",
+      "issuetype",
+      "project",
+      "issuelinks",
+      schema.globalFields.parentLinkField?.id,
+      schema.globalFields.teamField?.id,
+      schema.globalFields.targetStartField?.id,
+      schema.globalFields.targetEndField?.id,
+      schema.globalFields.goalsField?.id,
+      schema.globalFields.primaryJpdIdeaKeyField?.id,
+    ].filter((value): value is string => Boolean(value)),
   );
+}
+
+export async function searchPortfolioItems(input: {
+  projectKeys?: string[];
+  issueTypes?: string[];
+  parentLink?: string;
+  team?: string;
+  targetStartFrom?: string;
+  targetEndTo?: string;
+  statuses?: string[];
+  searchText?: string;
+  maxResults?: number;
+  nextPageToken?: string;
+}) {
+  const schema = await loadSchemaSnapshot();
+  const jqlParts: string[] = [];
+  if (input.projectKeys?.length) {
+    jqlParts.push(`project in (${input.projectKeys.map(quoteJql).join(", ")})`);
+  }
+  if (input.issueTypes?.length) {
+    jqlParts.push(`issuetype in (${input.issueTypes.map(quoteJql).join(", ")})`);
+  }
+  if (input.statuses?.length) {
+    jqlParts.push(`status in (${input.statuses.map(quoteJql).join(", ")})`);
+  }
+  if (input.parentLink && schema.globalFields.parentLinkField) {
+    jqlParts.push(`${fieldJqlClause(schema.globalFields.parentLinkField)} = ${quoteJql(input.parentLink)}`);
+  }
+  if (input.team && schema.globalFields.teamField) {
+    jqlParts.push(`${fieldJqlClause(schema.globalFields.teamField)} = ${quoteJql(input.team)}`);
+  }
+  if (input.targetStartFrom && schema.globalFields.targetStartField) {
+    jqlParts.push(`${fieldJqlClause(schema.globalFields.targetStartField)} >= ${quoteJql(input.targetStartFrom)}`);
+  }
+  if (input.targetEndTo && schema.globalFields.targetEndField) {
+    jqlParts.push(`${fieldJqlClause(schema.globalFields.targetEndField)} <= ${quoteJql(input.targetEndTo)}`);
+  }
+  if (input.searchText) {
+    jqlParts.push(`summary ~ ${quoteJql(input.searchText)}`);
+  }
+
+  const response = await createClient().post<SearchJqlResponse>("/rest/api/3/search/jql", {
+    jql: (jqlParts.length > 0 ? jqlParts : ["order by updated DESC"]).join(" AND "),
+    maxResults: input.maxResults ?? 20,
+    nextPageToken: input.nextPageToken,
+    fields: portfolioFieldIds(schema),
+  });
+
+  return {
+    nextPageToken: response.nextPageToken ?? null,
+    items: response.issues.map((issue) => normalizeIssue(issue, schema, undefined)),
+  };
+}
+
+function assertEditableField(editMeta: Record<string, JiraMetaField>, field: DiscoveredFieldRef, issueKey: string): void {
+  const metaField = editMeta[field.id];
+  if (!metaField || !hasEditOperation(metaField, "set")) {
+    throw new Error(`Field "${field.name}" is not editable with set operation on ${issueKey}.`);
+  }
+}
+
+export async function setPortfolioFields(input: PortfolioFieldInput): Promise<AuditResult<unknown>> {
+  const mode = input.mode ?? "preview";
+  const schema = await loadSchemaSnapshot();
+  const current = await fetchIssue(input.issueKey, schema);
+  const editMeta = await loadIssueEditMeta(current.key);
+  const fields: Record<string, unknown> = {};
+
+  if (input.parentLinkKey) {
+    if (!schema.globalFields.parentLinkField) {
+      throw new Error("Parent Link field was not discovered. Run discover_premium_capabilities first.");
+    }
+    assertEditableField(editMeta, schema.globalFields.parentLinkField, current.key);
+    fields[schema.globalFields.parentLinkField.id] = buildFieldValue(schema.globalFields.parentLinkField, input.parentLinkKey);
+  }
+  if (input.teamIdOrName) {
+    if (!schema.globalFields.teamField) {
+      throw new Error("Team field was not discovered. Run discover_premium_capabilities first.");
+    }
+    assertEditableField(editMeta, schema.globalFields.teamField, current.key);
+    fields[schema.globalFields.teamField.id] = buildFieldValue(schema.globalFields.teamField, input.teamIdOrName);
+  }
+  if (input.targetStart) {
+    if (!schema.globalFields.targetStartField) {
+      throw new Error("Target start field was not discovered. Run discover_premium_capabilities first.");
+    }
+    assertEditableField(editMeta, schema.globalFields.targetStartField, current.key);
+    fields[schema.globalFields.targetStartField.id] = buildFieldValue(schema.globalFields.targetStartField, input.targetStart);
+  }
+  if (input.targetEnd) {
+    if (!schema.globalFields.targetEndField) {
+      throw new Error("Target end field was not discovered. Run discover_premium_capabilities first.");
+    }
+    assertEditableField(editMeta, schema.globalFields.targetEndField, current.key);
+    fields[schema.globalFields.targetEndField.id] = buildFieldValue(schema.globalFields.targetEndField, input.targetEnd);
+  }
+  if (Object.keys(fields).length === 0) {
+    throw new Error("Expected at least one portfolio field to set.");
+  }
+
+  const preview = buildAuditResult(
+    {
+      intent: "Set Jira portfolio fields",
+      target: current.key,
+      warnings: [],
+      steps: [
+        {
+          kind: "rest",
+          description: "Update Advanced Roadmaps / Jira Premium fields on an issue.",
+          endpoint: `/rest/api/3/issue/${current.key}`,
+          input: { fields },
+          before: current,
+        },
+      ],
+      rollbackHint: "Use Jira issue history or re-run set_portfolio_fields with previous field values.",
+      result: { before: current },
+    },
+    mode,
+    false,
+  );
+
+  return runGuardedMutation({
+    actionKey: "jira.set_portfolio_fields",
+    mode,
+    changeReason: input.changeReason,
+    idempotencyKey: input.idempotencyKey,
+    pilotScope: {
+      existingName: String(current.summary ?? ""),
+      refs: [current.key, projectKeyFromIssue(current)].filter((value): value is string => Boolean(value)),
+    },
+    fingerprintInput: { issueKey: current.key, fields },
+    preview,
+    apply: async () => {
+      await createClient().put(`/rest/api/3/issue/${encodeURIComponent(current.key)}`, { fields });
+      const after = await fetchIssue(current.key, schema);
+      return buildAuditResult(
+        {
+          intent: preview.intent,
+          target: current.key,
+          warnings: [],
+          steps: preview.steps,
+          rollbackHint: preview.rollbackHint,
+          result: after,
+        },
+        mode,
+        true,
+      );
+    },
+  });
+}
+
+async function resolveIssueLinkTypeName(): Promise<string> {
+  const response = await loadIssueLinkTypes();
   return (
     response.issueLinkTypes.find((item: { name: string }) => item.name === "Relates")?.name ??
     response.issueLinkTypes[0]?.name ??
     "Relates"
   );
+}
+
+async function loadIssueLinkTypes(): Promise<{ issueLinkTypes: IssueLinkType[] }> {
+  return createClient().get<{ issueLinkTypes: IssueLinkType[] }>("/rest/api/3/issueLinkType");
+}
+
+async function resolveIssueLinkTypeByName(linkTypeName: string): Promise<IssueLinkType> {
+  const response = await loadIssueLinkTypes();
+  const normalized = normalizeFieldName(linkTypeName);
+  const match = response.issueLinkTypes.find((item) => normalizeFieldName(item.name) === normalized);
+  if (!match) {
+    throw new Error(
+      `Issue link type "${linkTypeName}" is not available. Available types: ${response.issueLinkTypes.map((item) => item.name).join(", ")}.`,
+    );
+  }
+  return match;
 }
 
 function hasIssueLinkTo(issue: ReturnType<typeof normalizeIssue>, otherIssueKey: string): boolean {
@@ -2267,6 +3104,105 @@ function hasIssueLinkTo(issue: ReturnType<typeof normalizeIssue>, otherIssueKey:
       outwardIssue?: { key?: string };
     };
     return candidate.inwardIssue?.key === otherIssueKey || candidate.outwardIssue?.key === otherIssueKey;
+  });
+}
+
+function hasIssueLinkToWithType(
+  issue: ReturnType<typeof normalizeIssue>,
+  otherIssueKey: string,
+  linkTypeName: string,
+): boolean {
+  const links = Array.isArray(issue.issueLinks) ? issue.issueLinks : [];
+  return links.some((link) => {
+    if (!link || typeof link !== "object") {
+      return false;
+    }
+    const candidate = link as {
+      type?: { name?: string };
+      inwardIssue?: { key?: string };
+      outwardIssue?: { key?: string };
+    };
+    return (
+      normalizeFieldName(candidate.type?.name ?? "") === normalizeFieldName(linkTypeName) &&
+      (candidate.inwardIssue?.key === otherIssueKey || candidate.outwardIssue?.key === otherIssueKey)
+    );
+  });
+}
+
+export async function linkDependency(input: DependencyLinkInput): Promise<AuditResult<unknown>> {
+  const mode = input.mode ?? "preview";
+  const linkType = await resolveIssueLinkTypeByName(input.linkType ?? "Blocks");
+  const blocker = await fetchIssue(input.blocksIssueKey);
+  const blocked = await fetchIssue(input.blockedIssueKey);
+  const linkAlreadyExists =
+    hasIssueLinkToWithType(blocker, blocked.key, linkType.name) ||
+    hasIssueLinkToWithType(blocked, blocker.key, linkType.name);
+  const payload = {
+    type: { name: linkType.name },
+    inwardIssue: { key: blocked.key },
+    outwardIssue: { key: blocker.key },
+  };
+
+  const preview = buildAuditResult(
+    {
+      intent: "Link Jira dependency",
+      target: `${blocker.key} blocks ${blocked.key}`,
+      warnings: linkAlreadyExists ? ["The dependency issue link already exists, so link creation will be skipped."] : [],
+      steps: linkAlreadyExists
+        ? []
+        : [
+            {
+              kind: "rest" as const,
+              description: "Create a Jira issue link for a delivery dependency.",
+              endpoint: "/rest/api/3/issueLink",
+              input: payload,
+            },
+          ],
+      rollbackHint: "Delete the Jira issue link if rollback is needed.",
+      result: { blocker, blocked, linkType },
+    },
+    mode,
+    false,
+  );
+
+  return runGuardedMutation({
+    actionKey: "jira.link_dependency",
+    mode,
+    changeReason: input.changeReason,
+    idempotencyKey: input.idempotencyKey,
+    pilotScope: {
+      refs: [blocker.key, blocked.key, projectKeyFromIssue(blocker), projectKeyFromIssue(blocked)].filter(
+        (value): value is string => Boolean(value),
+      ),
+    },
+    fingerprintInput: payload,
+    preview,
+    apply: async () => {
+      if (!linkAlreadyExists) {
+        await createClient().post("/rest/api/3/issueLink", payload);
+      }
+      const afterBlocker = await fetchIssue(blocker.key);
+      const afterBlocked = await fetchIssue(blocked.key);
+      return {
+        ...buildAuditResult(
+          {
+            intent: preview.intent,
+            target: preview.target,
+            warnings: preview.warnings,
+            steps: preview.steps,
+            rollbackHint: preview.rollbackHint,
+            result: {
+              blocker: afterBlocker,
+              blocked: afterBlocked,
+              linkType,
+            },
+          },
+          mode,
+          !linkAlreadyExists,
+        ),
+        deduplicated: linkAlreadyExists,
+      };
+    },
   });
 }
 
