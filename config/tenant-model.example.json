@@ -61,6 +61,26 @@
         "id": "customfield_10003",
         "name": "Primary JPD Idea Key",
         "clauseName": "cf[10003]"
+      },
+      "parentLinkField": {
+        "id": "customfield_10016",
+        "name": "Parent Link",
+        "clauseName": "Parent Link"
+      },
+      "teamField": {
+        "id": "customfield_10001",
+        "name": "Team",
+        "clauseName": "Team"
+      },
+      "targetStartField": {
+        "id": "customfield_10087",
+        "name": "Target start",
+        "clauseName": "Target start"
+      },
+      "targetEndField": {
+        "id": "customfield_10088",
+        "name": "Target end",
+        "clauseName": "Target end"
       }
     },
     "jpdProjects": [
@@ -68,6 +88,16 @@
         "id": "10000",
         "key": "DISC",
         "name": "Product Discovery",
+        "issueTypes": [
+          {
+            "id": "10001",
+            "name": "Idea"
+          },
+          {
+            "id": "10002",
+            "name": "Opportunity"
+          }
+        ],
         "ideaIssueTypeId": "10001",
         "horizonField": {
           "id": "customfield_10004",
@@ -87,8 +117,36 @@
               "value": "Later"
             }
           ]
+        },
+        "premiumFields": {
+          "polarisFields": [],
+          "connectionFields": []
         }
       }
-    ]
+    ],
+    "premiumCapabilities": {
+      "discoveredAt": "2026-01-01T00:00:00.000Z",
+      "plansAccess": {
+        "status": "forbidden",
+        "endpoint": "/rest/api/3/plans/plan",
+        "message": "Jira Plans API requires Administer Jira permission for this endpoint."
+      },
+      "jpdIssueTypes": [
+        {
+          "projectId": "10000",
+          "projectKey": "DISC",
+          "projectName": "Product Discovery",
+          "issueTypes": [
+            {
+              "id": "10001",
+              "name": "Idea"
+            }
+          ]
+        }
+      ],
+      "jpdPolarisFields": [],
+      "jpdConnectionFields": [],
+      "advancedRoadmapsFields": {}
+    }
   }
 }

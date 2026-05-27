@@ -68,7 +68,29 @@ Tools include:
 - `create_epic`
 - `update_epic`
 - `link_idea_epic`
+- `discover_premium_capabilities`
+- `list_jpd_issue_types`
+- `search_jpd_items`
+- `get_jpd_item`
+- `discover_jpd_connections`
+- `set_jpd_connection`
+- `plans_health_check`
+- `list_plans`
+- `get_plan`
+- `create_plan`
+- `update_plan`
+- `search_portfolio_items`
+- `set_portfolio_fields`
+- `link_dependency`
 - Jira Assets tools for schema/object lookup and guarded test mutations
+
+Premium capability tools are additive. The original V1 flow still works as:
+
+```text
+Organization Goal -> Business Goal -> Atlassian Project -> JPD Idea -> Jira Epic
+```
+
+On Jira Product Discovery Premium and Jira Software Premium, the Jira Product Portfolio MCP can also discover JPD issue-type hierarchies, connection-like JPD fields, Jira Plans API access, and Advanced Roadmaps fields such as `Parent Link`, `Team`, `Target start`, and `Target end`.
 
 ## Safety Model
 
@@ -125,6 +147,7 @@ Start here:
 - [Feedback triage playbook](cookbook/03-feedback-triage-playbook.md)
 - [Guarded writes and human approval](cookbook/04-guarded-writes-and-human-approval.md)
 - [Demo prompts](cookbook/05-demo-prompts.md)
+- [Jira Premium capabilities](cookbook/06-jira-premium-capabilities.md)
 
 ## Status
 
